@@ -1,0 +1,287 @@
+service: "course-booking-api"
+
+frameworkVersion: "3"
+
+package:
+  individually: true
+
+provider:
+  name: aws
+  region: ap-southeast-1
+  profile: cent_outlook
+  stage: ${opt:stage}
+  architecture: arm64
+  runtime: nodejs18.x
+  memorySize: 768
+  timeout: 10
+  httpApi:
+    cors: true
+    authorizers:
+      cognitoAuthorizer:
+        identitySource: $request.header.Authorization
+        issuerUrl:
+          Fn::Join:
+            - ""
+            - - "https://cognito-idp."
+              - "${opt:region, self:provider.region}"
+              - ".amazonaws.com/"
+              - !Ref CognitoPool
+        audience:
+          - !Ref CognitoClient
+  iamRoleStatements:
+    - Effect: "Allow"
+      Action:
+        - "dynamodb:BatchGetItem"
+        - "dynamodb:ConditionCheckItem"
+        - "dynamodb:GetItem"
+        - "dynamodb:PutItem"
+        - "dynamodb:Query"
+        - "dynamodb:UpdateItem"
+        - "dynamodb:Scan"
+      Resource:
+        - "arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.USERS_TABLE}"
+        - "arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.COURSES_TABLE}"
+    - Effect: "Allow"
+      Action:
+        - "cognito-identity:*"
+        - "cognito-sync:*"
+        - "cognito-idp:*"
+      Resource: "*"
+  environment:
+    USERS_TABLE: ${self:service}-users-${opt:stage}
+    COURSES_TABLE: ${self:service}-courses-${opt:stage}
+    STAGE: ${self:provider.stage}
+    COGNITO_POOL_ID: !Ref CognitoPool
+    COGNITO_CLIENT_ID: !Ref CognitoClient
+
+custom:
+  dynamodb:
+    stages:
+      - dev
+    start:
+      port: 8000
+      inMemory: true
+      migrate: true
+      # Comment if you don't have a DynamoDB running locally
+      noStart: true
+    migration:
+      dir: offline/migrations
+
+functions:
+  # users api
+  confirmSignup:
+    handler: src/handlers/confirmSignup.main
+    events:
+      - httpApi:
+          path: /users/confirm
+          method: post
+  preSignup:
+    memorySize: 512
+    handler: src/handlers/preSignup.main
+    events:
+      - cognitoUserPool:
+          pool: ${self:service}-${self:provider.stage}
+          trigger: PreSignUp
+          existing: true
+          forceDeploy: true
+  postSignup:
+    memorySize: 512
+    handler: src/handlers/postSignup.main
+    events:
+      - cognitoUserPool:
+          pool: ${self:service}-${self:provider.stage}
+          trigger: PostConfirmation
+          existing: true
+          forceDeploy: true
+  preAuthentication:
+    memorySize: 512
+    handler: src/handlers/preAuthentication.main
+    events:
+      - cognitoUserPool:
+          pool: ${self:service}-${self:provider.stage}
+          trigger: PreAuthentication
+          existing: true
+          forceDeploy: true
+  getUser:
+    handler: src/handlers/getUser.main
+    events:
+      - httpApi:
+          path: /users/{email}
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  # updateUser:
+  #   handler: src/handlers/updateUser.main
+  #   events:
+  #     - httpApi:
+  #         path: /users/{email}
+  #         method: patch
+  # deleteUser:
+  #   handler: src/handlers/deleteUser.main
+  #   events:
+  #     - httpApi:
+  #         path: /users/{email}
+  #         method: delete
+  getAllUsers:
+    handler: src/handlers/getAllUsers.main
+    events:
+      - httpApi:
+          path: /users
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+  deleteAllUser:
+    handler: src/handlers/deleteAllUser.main
+    events:
+      - httpApi:
+          path: /users
+          method: delete
+          authorizer:
+            name: cognitoAuthorizer
+  # courses api
+  createCourse:
+    handler: src/handlers/createCourse.main
+    events:
+      - httpApi:
+          path: /courses
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+  getCourse:
+    handler: src/handlers/getCourse.main
+    events:
+      - httpApi:
+          path: /courses/{instructor}/{course}
+          method: get
+  updateCourse:
+    handler: src/handlers/updateCourse.main
+    events:
+      - httpApi:
+          path: /courses/{instructor}/{course_name}
+          method: patch
+          authorizer:
+            name: cognitoAuthorizer
+  deleteCourse:
+    handler: src/handlers/deleteCourse.main
+    events:
+      - httpApi:
+          path: /courses/{instructor}/{course}
+          method: delete
+          authorizer:
+            name: cognitoAuthorizer
+  getAllCourses:
+    handler: src/handlers/getAllCourses.main
+    events:
+      - httpApi:
+          path: /courses
+          method: get
+  deleteAllCourse:
+    handler: src/handlers/deleteAllCourse.main
+    events:
+      - httpApi:
+          path: /courses
+          method: delete
+          authorizer:
+            name: cognitoAuthorizer
+  # enroll api
+  enroll:
+    handler: src/handlers/enroll.main
+    events:
+      - httpApi:
+          path: /enroll
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+  getEnrolledCourses:
+    handler: src/handlers/getEnrolledCourses.main
+    events:
+      - httpApi:
+          path: /enrolled-courses/{email}
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+resources:
+  Resources:
+    UsersTable:
+      Type: "AWS::DynamoDB::Table"
+      Properties:
+        TableName: ${self:provider.environment.USERS_TABLE}
+        AttributeDefinitions:
+          - AttributeName: "PK"
+            AttributeType: "S"
+          - AttributeName: "SK"
+            AttributeType: "S"
+        KeySchema:
+          - AttributeName: "PK"
+            KeyType: "HASH"
+          - AttributeName: "SK"
+            KeyType: "RANGE"
+        BillingMode: "PAY_PER_REQUEST"
+    CourseTable:
+      Type: "AWS::DynamoDB::Table"
+      Properties:
+        TableName: ${self:provider.environment.COURSES_TABLE}
+        AttributeDefinitions:
+          - AttributeName: "PK"
+            AttributeType: "S"
+          - AttributeName: "SK"
+            AttributeType: "S"
+          - AttributeName: "GSI1PK"
+            AttributeType: "S"
+          - AttributeName: "GSI1SK"
+            AttributeType: "S"
+        KeySchema:
+          - AttributeName: "PK"
+            KeyType: "HASH"
+          - AttributeName: "SK"
+            KeyType: "RANGE"
+        BillingMode: "PAY_PER_REQUEST"
+        GlobalSecondaryIndexes:
+          - IndexName: "GSI1"
+            KeySchema:
+              - AttributeName: "GSI1PK"
+                KeyType: "HASH"
+              - AttributeName: "GSI1SK"
+                KeyType: "RANGE"
+            Projection:
+              ProjectionType: ALL
+    CognitoPool:
+      Type: AWS::Cognito::UserPool
+      Properties:
+        UserPoolName: ${self:service}-${self:provider.stage}
+        Schema:
+          - Name: email
+            Required: true
+            Mutable: true
+          - Name: given_name
+            Required: true
+            Mutable: true
+          - Name: family_name
+            Required: true
+            Mutable: true
+          - Name: phone_number
+            Required: true
+            Mutable: true
+        Policies:
+          PasswordPolicy:
+            MinimumLength: 6
+        AutoVerifiedAttributes: ["email"]
+    CognitoClient:
+      Type: AWS::Cognito::UserPoolClient
+      Properties:
+        ClientName: ${self:service}
+        GenerateSecret: false
+        UserPoolId:
+          Ref: CognitoPool
+        AccessTokenValidity: 5
+        IdTokenValidity: 5
+        ExplicitAuthFlows:
+          - "ADMIN_NO_SRP_AUTH"
+          - "USER_PASSWORD_AUTH"
+plugins:
+  - serverless-dotenv-plugin
+  - serverless-esbuild
+  - serverless-offline
+  - serverless-dynamodb-local
